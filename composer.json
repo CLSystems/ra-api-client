@@ -1,0 +1,29 @@
+{
+  "name": "clsystems/ra-api-client",
+  "type": "library",
+  "description": "Rakuten Advertising API library",
+  "keywords": [
+    "clsystems",
+    "affiliate",
+    "rakuten",
+    "advertising",
+    "api",
+    "client"
+  ],
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Jeroen Guyt - CLSystems",
+      "email": "info@clsystems.nl"
+    }
+  ],
+  "autoload": {
+    "psr-4": { "CLSystems\\RakutenAdvertising\\": "src/" }
+  },
+  "require": {
+    "php": ">=7.3",
+    "ext-curl": "*",
+    "ext-json": "*",
+    "guzzlehttp/guzzle": "^7.2"
+  }
+}
