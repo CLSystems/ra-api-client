@@ -23,12 +23,7 @@ class Client
 	/**
 	 * @var int
 	 */
-	const MAX_DAYS = 3;
-
-	/**
-	 * @var int
-	 */
-	const MAX_EVENTS = 1000;
+	const MAX_TRANSACTIONS = 1000;
 
 	/**
 	 * @var string
@@ -170,7 +165,7 @@ class Client
 	 * @param int $daysBack
 	 * @return void
 	 */
-	protected function init(int $daysBack = 3)
+	protected function initDates(int $daysBack = 3)
 	{
 		$this->localDateEnd = new DateTime();
 		$this->localDateStart = (clone $this->localDateEnd)->modify('-' . $daysBack . 'days');
@@ -193,7 +188,7 @@ class Client
 		{
 			$this->retrieveNewToken();
 		}
-		$this->saveToken();
+		$this->saveToken($this->token);
 	}
 
 	/**
@@ -303,28 +298,6 @@ class Client
 	}
 
 	/**
-	 * Process Rakuten events
-	 *
-	 * @return void
-	 * @throws GuzzleException
-	 */
-	protected function processEvents()
-	{
-		$page = 1;
-		do
-		{
-			$events = $this->retrieveEvents($page);
-			foreach ($events as $event)
-			{
-				$this->processEvent($event);
-			}
-
-			++$page;
-		}
-		while (count($events) === static::MAX_EVENTS);
-	}
-
-	/**
 	 * Retrieve Rakuten events
 	 *
 	 * @param int $page
@@ -346,7 +319,7 @@ class Client
 				],
 				'query'   => [
 					'page'                   => $page,
-					'limit'                  => static::MAX_EVENTS,
+					'limit'                  => static::MAX_TRANSACTIONS,
 					'transaction_date_start' => $this->rakutenDateStart,
 					'transaction_date_end'   => $this->rakutenDateEnd,
 				],
@@ -362,150 +335,13 @@ class Client
 	}
 
 	/**
-	 * Process Rakuten event
-	 *
-	 * @param array $event
-	 * @return void
-	 */
-	protected function processEvent(array $event)
-	{
-		$this->log('Processing Rakuten event (' . $event['etransaction_id'] . ')');
-
-		// Process transactions only
-		if ('Y' === $event['is_event'])
-		{
-			$this->log('Skipping Rakuten event (not a transaction)');
-			return;
-		}
-
-		// Rakuten u1 parameter (program_id|dci)
-		$u1 = explode('|', $event['u1']);
-		if (2 !== count($u1))
-		{
-			echo 'Warning: Rakuten u1 parameter is invalid: ' . var_export($event, true) . "\n";
-			return;
-		}
-		$event['program_id'] = $u1[0];
-		$event['dci'] = $u1[1];
-
-		// Check if transaction exists
-		$transaction = $this->getTransaction($event);
-		if (false === empty($transaction))
-		{
-			$this->log('Transaction found, skipping insert');
-			return;
-		}
-
-		$this->insertTransaction($event);
-	}
-
-	/**
-	 * Get transaction
-	 *
-	 * @param array $event
-	 * @return array
-	 */
-	protected function getTransaction(array $event): array
-	{
-		$this->log('Retrieving transaction');
-
-		return TransactionData::getTransactions([
-			'source'      => TransactionData::ADVERTISER_AS_SOURCE,
-			'program_id'  => $event['program_id'],
-			'start_date'  => $this->localDateStart,
-			'end_date'    => $this->localDateEnd,
-			'program_tag' => $event['etransaction_id'],
-		]);
-	}
-
-	/**
-	 * Insert transaction via direct tracking
-	 *
-	 * @param array $event
-	 * @return void
-	 */
-	protected function insertTransaction(array $event)
-	{
-		$this->log('Inserting transaction (calling direct trackling)');
-
-		$transactionDate = $this->formatEventDate($event['transaction_date']);
-		if ('' === $transactionDate)
-		{
-			echo 'Warning: Unable to format transaction date: ' . $event['transaction_date'] . "\n";
-			return;
-		}
-
-		$program = Std::first(ProgramData::getProgram(['id' => $event['program_id']]));
-		if (false === $program)
-		{
-			echo 'Warning: Unable to retrieve program: ' . $event['program_id'] . "\n";
-			return;
-		}
-
-		$advertiser = Std::first(AdvertiserData::getAdvertiser(['id' => $program['advertiser_id']]));
-		if (false === $advertiser)
-		{
-			echo 'Warning: Unable to retrieve advertiser: ' . $program['advertiser_id'] . "\n";
-			return;
-		}
-
-		$trackingSegment = Std::first(TrackingSegmentData::getTrackingSegment(['id' => $advertiser['tracking_segment_id']]));
-		if (false === $advertiser)
-		{
-			echo 'Warning: Unable to retrieve tracking segement: ' . $advertiser['tracking_segment_id'] . "\n";
-			return;
-		}
-
-		$client = new GuzzleClient([
-			'base_uri' => 'https://' . $trackingSegment['tracking_domain'] . '/',
-		]);
-
-		$query = [
-			'ci'  => $event['program_id'],
-			'dci' => $event['dci'],
-			'ti'  => $event['etransaction_id'],
-			'td'  => $transactionDate,
-			'cur' => $event['currency'],
-			'a'   => $event['commissions'],
-			'r'   => $event['sale_amount'],
-			'oa'  => $event['product_name'],
-			'sku' => $event['sku_number'],
-			'qty' => $event['quantity'],
-			'e1'  => $event['order_id'],
-		];
-
-		try
-		{
-			$response = $client->get('d', [
-				'verify'          => false,
-				'allow_redirects' => true,
-				'query'           => $query,
-			]);
-		}
-		catch (ClientException $exception)
-		{
-			echo 'Error: Inserting transaction via direct tracking: ' . $exception->getMessage() . "\n";
-			exit;
-		}
-
-		$result = json_decode($response->getBody()->getContents(), true);
-		if (false === isset($result['affiliatemarketing_id']))
-		{
-			echo 'Warning: Inserting transaction via direct tracking: '
-				. var_export($response->getBody()->getContents(), true)
-				. ' using the following query parameters: '
-				. var_export($query, true)
-				. "\n";
-		}
-	}
-
-	/**
-	 * Format event date
+	 * Format date with given timezone
 	 *
 	 * @param string $date
+	 * @param string $targetTimeZone
 	 * @return string
 	 */
-	protected function formatEventDate(string $date): string
+	protected function formatDate(string $date, string $targetTimeZone = 'CET'): string
 	{
 		$date = str_replace('+0000 (UTC)', '', $date);
 		$date = DateTime::createFromFormat('D M d Y H:i:s T', $date);
@@ -515,7 +351,7 @@ class Client
 			return '';
 		}
 
-		$date->setTimezone(new DateTimeZone('CET'));
+		$date->setTimezone(new DateTimeZone($targetTimeZone));
 		return $date->format('Y-m-d H:i:s');
 	}
 
